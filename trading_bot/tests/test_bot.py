@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import httpx2
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")  # реальных запросов тесты не делают
 
 from tbot.agents import MarketContext, RiskManager  # noqa: E402
 from tbot.backtest import run_backtest  # noqa: E402
@@ -46,7 +48,7 @@ def test_indicators_bounds():
 
 # ---------- риск-менеджер ----------
 def test_risk_caps_size_and_widens_stop():
-    rm = RiskManager(RiskConfig(max_position_pct=0.2))
+    rm = RiskManager(RiskConfig(max_position_pct=0.2, risk_per_trade_pct=1.0))
     v = rm.review(ctx(), buy(0.5), DEB, day_pnl_pct=0, trades_today=0)
     assert v.approved
     assert v.size_pct == pytest.approx(0.2)
@@ -55,7 +57,7 @@ def test_risk_caps_size_and_widens_stop():
 
 
 def test_risk_llm_cannot_loosen_limits():
-    rm = RiskManager(RiskConfig(max_position_pct=0.1, max_stop_loss_pct=0.05))
+    rm = RiskManager(RiskConfig(max_position_pct=0.1, max_stop_loss_pct=0.05, risk_per_trade_pct=1.0))
     loose = RiskVerdict(approved=True, size_pct=0.9, stop_loss_pct=0.5, take_profit_pct=0.1, reason="ИИ")
     v = rm.enforce(ctx(), buy(0.9), DEB, loose, 0, 0)
     assert v.size_pct <= 0.1 and v.stop_loss_pct <= 0.05
@@ -78,6 +80,21 @@ def test_risk_always_allows_exit_and_never_shorts():
 def test_risk_denies_when_one_lot_too_expensive():
     rm = RiskManager(RiskConfig(max_position_pct=0.01))
     assert not rm.review(ctx(price=500, lot=10, equity=100_000), buy(), DEB, 0, 0).approved
+
+
+def test_risk_sizes_by_risk_per_trade():
+    # капитал 1000, риск на сделку 1% = 10 ₽; стоп 4% + комиссии 0.7% -> позиция ~21% капитала
+    rm = RiskManager(RiskConfig(risk_per_trade_pct=0.01), round_trip_cost=0.007)
+    v = rm.review(ctx(price=10, lot=1, equity=1000, atr=0.2), buy(1.0, stop=0.04, take=0.1), DEB, 0, 0)
+    assert v.approved
+    assert v.size_pct == pytest.approx(0.01 / (0.04 + 0.007), rel=1e-3)
+    assert v.size_pct * 1000 * v.stop_loss_pct <= 10 + 1e-6
+
+
+def test_risk_rejects_take_that_does_not_cover_commission():
+    rm = RiskManager(RiskConfig(min_edge_over_costs=2.0), round_trip_cost=0.007)
+    v = rm.review(ctx(price=100, lot=1, equity=1000, atr=0.05), buy(1.0, stop=0.002, take=0.004), DEB, 0, 0)
+    assert not v.approved and "комисси" in v.reason
 
 
 # ---------- бумажный брокер ----------
@@ -118,7 +135,7 @@ def test_memory_learns_accuracy():
 
 # ---------- бэктест / движок ----------
 def test_backtest_runs_and_executes_on_next_open():
-    cfg = Config(use_llm=False)
+    cfg = Config(use_llm=False, candle_interval=60, start_cash=100_000, commission_pct=0.0005)
     candles = make_candles(400, seed=3)
     rep = run_backtest(cfg, "T", candles, lot_size=10)
     assert rep.bars > 0 and rep.trades >= 1
@@ -142,27 +159,28 @@ def test_engine_cycle_with_mocked_llm(monkeypatch):
         return None
 
     monkeypatch.setattr(LLM, "ask", fake_ask)
-    llm = LLM.__new__(LLM)
+    llm = LLM()
     broker = PaperBroker(100_000, 0, 0)
-    engine = TradingEngine(Config(), broker, Memory(), llm)
+    cfg = Config(start_cash=100_000, commission_pct=0.0005, llm_mode="always")
+    cfg.risk.max_position_pct = 0.2
+    engine = TradingEngine(cfg, broker, Memory(), llm)
     candles = make_candles(300)
     r = engine.run_cycle("T", candles, lot_size=1, trades=make_trades(), news=[])
     # новостей нет -> новостной агент не тратит запрос на Claude
     assert calls.count("AgentReport") == 2
     assert {"DebateResult", "TradeDecision", "RiskVerdict"} <= set(calls)
     assert r.fill and r.fill.side == Action.BUY
-    assert r.verdict.size_pct <= Config().risk.max_position_pct   # ИИ просил 50%, лимит 20%
+    assert r.used_llm
+    assert r.verdict.size_pct <= 0.2   # ИИ просил 50%, лимит 20%
 
 
 # ---------- запрос к Claude ----------
-def _llm_with_transport(handler):
+def _llm_with_transport(handler, budget=None):
     from anthropic import DefaultHttpxClient
     import anthropic
-    llm = LLM.__new__(LLM)
+    llm = LLM("claude-opus-5-5", "medium", budget_usd=budget)
     llm.client = anthropic.Anthropic(api_key="test", max_retries=0,
                                      http_client=DefaultHttpxClient(transport=httpx2.MockTransport(handler)))
-    llm.model, llm.effort = "claude-opus-5-5", "medium"
-    llm.input_tokens = llm.output_tokens = llm.calls = llm.errors = 0
     return llm
 
 
@@ -241,3 +259,84 @@ def test_config_rejects_unknown_keys(tmp_path):
     p.write_text("tickerz: [SBER]\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_config(p)
+
+
+# ---------- бюджет Claude ----------
+def test_llm_budget_is_paced():
+    llm = _llm_with_transport(lambda r: httpx2.Response(500), budget=1.0)
+    llm.session_seconds = 3600
+    assert llm.can_spend()
+    llm.output_tokens = 10_000   # $0.20 - больше 10% бюджета в самом начале сессии
+    assert not llm.can_spend()
+    assert llm.ask("роль", "данные", AgentReport) is None and llm.skipped == 1
+    llm.started -= 3600          # сессия прошла целиком - можно тратить весь бюджет
+    assert llm.can_spend()
+
+
+def test_escalate_mode_skips_llm_on_weak_signal(monkeypatch):
+    calls = []
+    monkeypatch.setattr(LLM, "ask", lambda self, *a: calls.append(1))
+    cfg = Config(llm_mode="escalate", escalate_threshold=0.99)
+    engine = TradingEngine(cfg, PaperBroker(1000, 0, 0), Memory(), LLM())
+    r = engine.run_cycle("T", make_candles(300, start_price=100), lot_size=1)
+    assert not r.used_llm and not calls
+
+
+# ---------- подбор стратегии ----------
+class FakeData:
+    def __init__(self, lots):
+        self.lots = lots
+
+    def info(self, t):
+        lot, price = self.lots[t]
+        return {"ticker": t, "name": t, "lot_size": lot, "last": price, "tradable": True}
+
+    def candles(self, t, interval, days):
+        freq = {1: "min", 10: "10min", 60: "h"}[interval]
+        return make_candles(900, start_price=self.lots[t][1], vol=0.002 * interval ** 0.5, freq=freq,
+                            seed=interval)
+
+
+def test_select_filters_unaffordable_and_picks_interval(tmp_path):
+    from tbot.strategy_select import load_strategy, save_strategy, select_strategy
+    data = FakeData({"CHEAP": (1, 100.0), "PRICEY": (10, 300.0)})   # лот 3000 ₽ не влезает в 1000 ₽
+    cfg = Config(tickers=["CHEAP", "PRICEY"], test_intervals=[1, 60], commission_pct=0.0005)
+    s = select_strategy(cfg, data, data, log_fn=lambda *a: None)
+    assert {r["ticker"] for r in s["results"]} == {"CHEAP"}
+    assert {r["interval"] for r in s["results"]} == {1, 60}
+    if s["profitable"]:
+        assert s["interval"] in (1, 60) and s["tickers"] == ["CHEAP"]
+    save_strategy(tmp_path / "s.json", s)
+    assert load_strategy(tmp_path / "s.json")["results"]
+
+
+def test_book_pressure():
+    from tbot.behavior import book_pressure
+    b = book_pressure({"bids": [(99.9, 300), (99.8, 100)], "asks": [(100.1, 100), (100.2, 100)]})
+    assert b["imbalance"] == pytest.approx(0.333, abs=1e-3) and b["spread_pct"] > 0
+
+
+def test_tinvest_candles_parsing(monkeypatch):
+    from tbot.data.tinvest_data import TInvestData
+    from tbot.tinvest_api import TInvestClient
+
+    def fake_call(self, service, method, body):
+        if method == "ShareBy":
+            return {"instrument": {"uid": "u1", "lot": 10, "name": "ВТБ"}}
+        if method == "GetCandles":
+            assert body["interval"] == "CANDLE_INTERVAL_1_MIN"
+            q = lambda x: {"units": str(int(x)), "nano": int(round((x - int(x)) * 1e9))}
+            return {"candles": [
+                {"open": q(90.1), "high": q(90.5), "low": q(90.0), "close": q(90.4), "volume": "7",
+                 "time": "2026-11-09T07:00:00Z", "isComplete": True},
+                {"open": q(90.4), "high": q(90.6), "low": q(90.3), "close": q(90.5), "volume": "3",
+                 "time": "2026-11-09T07:01:00Z", "isComplete": False},
+            ]}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(TInvestClient, "call", fake_call)
+    d = TInvestData(TInvestClient("tok"))
+    df = d.candles("VTBR", 1, 0.01)
+    assert len(df) == 1                          # незакрытая свеча отброшена
+    assert df["close"].iloc[0] == pytest.approx(90.4) and df["volume"].iloc[0] == 70   # лоты -> штуки
+    assert str(df.index[0]) == "2026-11-09 10:00:00"   # UTC -> МСК

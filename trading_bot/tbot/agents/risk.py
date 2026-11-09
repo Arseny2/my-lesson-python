@@ -20,9 +20,10 @@ class RiskManager(Agent):
         "или запретить сделку. Жёсткие лимиты всё равно проверит код."
     )
 
-    def __init__(self, cfg: RiskConfig, llm=None):
+    def __init__(self, cfg: RiskConfig, llm=None, round_trip_cost: float = 0.0):
         super().__init__(llm)
         self.cfg = cfg
+        self.round_trip_cost = round_trip_cost
 
     def review(self, ctx: MarketContext, decision: TradeDecision, debate: DebateResult,
                day_pnl_pct: float, trades_today: int) -> RiskVerdict:
@@ -74,18 +75,27 @@ class RiskManager(Agent):
         current_in_ticker = (ctx.position or {}).get("value", 0)
         room_ticker = max(0.0, c.max_position_pct - current_in_ticker / equity) if equity else 0
         room_total = max(0.0, c.max_total_exposure_pct - exposure / equity) if equity else 0
-        size = min(verdict.size_pct, decision.size_pct, room_ticker, room_total)
-        if size < verdict.size_pct:
-            reasons.append(f"размер урезан до {size:.1%} по лимитам")
-        lot_value = ctx.price * ctx.lot_size
-        if equity and size * equity < lot_value:
-            return deny(f"Разрешённой суммы ({size * equity:,.0f} ₽) не хватает даже на 1 лот ({lot_value:,.0f} ₽)")
-
         atr = ctx.indicators.get("atr14") or 0
         min_stop = max(c.min_stop_loss_pct, c.atr_stop_multiplier * atr / ctx.price if ctx.price else 0)
+        if min_stop > c.max_stop_loss_pct:
+            return deny(f"Волатильность слишком высокая: нужный стоп {min_stop:.1%} больше лимита "
+                        f"{c.max_stop_loss_pct:.0%}")
         stop = min(max(verdict.stop_loss_pct, min_stop), c.max_stop_loss_pct)
         take = max(verdict.take_profit_pct, stop * 1.5)  # прибыль минимум в 1.5 раза больше риска
         if stop != verdict.stop_loss_pct:
-            reasons.append(f"стоп скорректирован до {stop:.1%}")
+            reasons.append(f"стоп скорректирован до {stop:.2%}")
+        need = self.round_trip_cost * c.min_edge_over_costs
+        if take < need:
+            return deny(f"Тейк {take:.2%} не окупает комиссии: нужно хотя бы {need:.2%} "
+                        f"({c.min_edge_over_costs:g} x {self.round_trip_cost:.2%} за вход и выход)")
+
+        # Размер от риска: если сработает стоп, теряем не больше risk_per_trade_pct капитала
+        risk_size = c.risk_per_trade_pct / (stop + self.round_trip_cost)
+        size = min(verdict.size_pct, decision.size_pct, room_ticker, room_total, risk_size)
+        if size < verdict.size_pct:
+            reasons.append(f"размер урезан до {size:.1%} по лимитам риска")
+        lot_value = ctx.price * ctx.lot_size
+        if equity and size * equity < lot_value:
+            return deny(f"Разрешённой суммы ({size * equity:,.0f} ₽) не хватает даже на 1 лот ({lot_value:,.0f} ₽)")
         return RiskVerdict(approved=True, size_pct=round(size, 4), stop_loss_pct=round(stop, 4),
                            take_profit_pct=round(take, 4), reason="; ".join(reasons))

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import TypeVar
 
 import anthropic
@@ -26,15 +28,32 @@ COMMON_RULES = (
 
 
 class LLM:
-    def __init__(self, model: str = "claude-opus-5-5", effort: str = "medium"):
+    def __init__(self, model: str = "claude-opus-5-5", effort: str = "medium",
+                 budget_usd: float | None = None, session_hours: float = 6.0):
         # Ключ берётся из ANTHROPIC_API_KEY (или профиля `ant auth login`)
-        self.client = anthropic.Anthropic(max_retries=3)
+        self.client = anthropic.Anthropic(max_retries=2, timeout=60.0)
         self.model = model
         self.effort = effort
+        self.budget_usd = budget_usd
+        self.session_seconds = session_hours * 3600
+        self.started = time.monotonic()
         self.input_tokens = 0
         self.output_tokens = 0
         self.calls = 0
         self.errors = 0
+        self.skipped = 0   # запросы, пропущенные из-за бюджета
+        self._lock = threading.Lock()  # агенты могут спрашивать Claude параллельно
+
+    def budget_left(self) -> float | None:
+        return None if self.budget_usd is None else max(0.0, self.budget_usd - self.cost_usd)
+
+    def can_spend(self) -> bool:
+        """Тратим бюджет равномерно: к середине сессии - не больше ~половины (+10% запаса на всплеск)."""
+        if self.budget_usd is None:
+            return True
+        elapsed = (time.monotonic() - self.started) / self.session_seconds if self.session_seconds else 1
+        allowed = self.budget_usd * min(1.0, elapsed + 0.1)
+        return self.cost_usd < allowed
 
     @property
     def cost_usd(self) -> float:
@@ -43,6 +62,9 @@ class LLM:
 
     def ask(self, role_prompt: str, data: str, schema: type[T]) -> T | None:
         """Возвращает объект schema или None (тогда агент использует запасной алгоритм)."""
+        if not self.can_spend():
+            self.skipped += 1
+            return None
         try:
             response = self.client.beta.messages.parse(
                 model=self.model,
@@ -76,11 +98,13 @@ class LLM:
             self.errors += 1
             return None
 
-        self.calls += 1
         usage = response.usage
-        self.input_tokens += (usage.input_tokens or 0) + (usage.cache_read_input_tokens or 0) \
-            + (usage.cache_creation_input_tokens or 0)
-        self.output_tokens += usage.output_tokens or 0
+        with self._lock:
+            self.calls += 1
+            # кэш считаем по полной цене входа - оценка расходов получается с запасом
+            self.input_tokens += (usage.input_tokens or 0) + (usage.cache_read_input_tokens or 0) \
+                + (usage.cache_creation_input_tokens or 0)
+            self.output_tokens += usage.output_tokens or 0
 
         if response.stop_reason == "refusal":
             log.warning("Claude отказался отвечать (request_id=%s)", response._request_id)

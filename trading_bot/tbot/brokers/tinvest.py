@@ -16,59 +16,31 @@ import logging
 import uuid
 from pathlib import Path
 
-import requests
-
 from ..models import Action, Fill, Position
+from ..tinvest_api import TInvestClient, TInvestError, f2q, q2f  # noqa: F401 (реэкспорт)
 from .base import Broker
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://invest-public-api.tbank.ru/rest"  # старый адрес: invest-public-api.tinkoff.ru
-PKG = "tinkoff.public.invest.api.contract.v1"
-
-
-def q2f(q: dict | None) -> float:
-    """Quotation / MoneyValue {'units': '123', 'nano': 450000000} -> 123.45"""
-    if not q:
-        return 0.0
-    return int(q.get("units", 0) or 0) + int(q.get("nano", 0) or 0) / 1e9
-
-
-def f2q(x: float) -> dict:
-    units = int(x)
-    return {"units": str(units), "nano": int(round((x - units) * 1e9))}
-
-
-class TInvestError(RuntimeError):
-    pass
-
 
 class TInvestBroker(Broker):
-    def __init__(self, token: str, sandbox: bool = True, account_id: str | None = None,
+    def __init__(self, token: str | None = None, sandbox: bool = True, account_id: str | None = None,
                  class_code: str = "TQBR", state_file: str | Path | None = None,
-                 base_url: str = BASE_URL, sandbox_start_cash: float = 100_000.0):
-        if not token:
-            raise TInvestError("Не задан TINVEST_TOKEN в .env")
+                 sandbox_start_cash: float = 100_000.0, client: TInvestClient | None = None):
+        self.api = client or TInvestClient(token, class_code)
         self.sandbox = sandbox
         self.is_real_money = not sandbox
         self.name = "tinvest_sandbox" if sandbox else "tinvest_live"
-        self.class_code = class_code
-        self.base_url = base_url.rstrip("/")
-        self.s = requests.Session()
-        self.s.headers.update({"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-        self._instruments: dict[str, dict] = {}
         self.state_file = Path(state_file) if state_file else None
         self.meta = self._load_meta()  # стопы, тейки, решения - то, чего нет у брокера
         self.closed_trades: list[dict] = self.meta.setdefault("closed_trades", [])
         self.account_id = account_id or self._default_account(sandbox_start_cash)
 
-    # --- HTTP ---
     def _call(self, service: str, method: str, body: dict) -> dict:
-        url = f"{self.base_url}/{PKG}.{service}/{method}"
-        r = self.s.post(url, data=json.dumps(body), timeout=20)
-        if r.status_code != 200:
-            raise TInvestError(f"{service}/{method}: HTTP {r.status_code} {r.text[:300]}")
-        return r.json()
+        return self.api.call(service, method, body)
+
+    def instrument(self, ticker: str) -> dict:
+        return self.api.instrument(ticker)
 
     def _svc(self, live_service: str) -> str:
         return "SandboxService" if self.sandbox else live_service
@@ -91,15 +63,6 @@ class TInvestBroker(Broker):
                                + ", ".join(f"{a['id']} ({a.get('name')})" for a in accs))
         return open_accs[0]["id"]
 
-    # --- инструменты ---
-    def instrument(self, ticker: str) -> dict:
-        if ticker not in self._instruments:
-            data = self._call("InstrumentsService", "ShareBy", {
-                "idType": "INSTRUMENT_ID_TYPE_TICKER", "classCode": self.class_code, "id": ticker})
-            ins = data["instrument"]
-            self._instruments[ticker] = {"uid": ins["uid"], "figi": ins.get("figi"), "lot": int(ins.get("lot", 1))}
-        return self._instruments[ticker]
-
     # --- локальные метаданные позиций ---
     def _load_meta(self) -> dict:
         if self.state_file and self.state_file.exists():
@@ -118,12 +81,11 @@ class TInvestBroker(Broker):
 
     def _positions(self) -> dict[str, Position]:
         raw = self._raw_portfolio()
-        by_uid = {v["uid"]: t for t, v in self._instruments.items()}
         out = {}
         for p in raw.get("positions", []):
             if p.get("instrumentType") != "share":
                 continue
-            ticker = by_uid.get(p.get("instrumentUid")) or p.get("ticker")
+            ticker = self.api.ticker_by_uid(p.get("instrumentUid", "")) or p.get("ticker")
             if not ticker:
                 continue
             lot = self.instrument(ticker)["lot"]

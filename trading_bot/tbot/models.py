@@ -92,3 +92,4 @@ class CycleResult:
     verdict: RiskVerdict | None = None
     fill: Fill | None = None
     time: str = ""
+    used_llm: bool = False

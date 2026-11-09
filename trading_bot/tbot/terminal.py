@@ -92,3 +92,26 @@ def show_backtest(r: BacktestReport) -> None:
     console.print(a)
     if r.lessons:
         console.print(Panel("\n".join(f"• {l}" for l in r.lessons), title="Последние уроки"))
+
+
+def show_selection(s: dict) -> None:
+    """Итоги подбора стратегии (команда select)."""
+    rows = s.get("results", [])
+    if rows:
+        t = Table(title="Сравнение таймфреймов (с комиссией)")
+        for col in ("Бумага", "Свеча", "Порог", "Обучение", "Проверка", "Сделок", "Прибыльных", "Просадка",
+                    "Купить и держать"):
+            t.add_column(col, justify="right")
+        c = lambda x: f"[{'green' if x > 0 else 'red'}]{x:+.2%}[/]"
+        for r in sorted(rows, key=lambda r: r["test_return"], reverse=True):
+            t.add_row(r["ticker"], f"{r['interval']} мин", f"{r['threshold']:.1f}", c(r["train_return"]),
+                      c(r["test_return"]), str(r["test_trades"]), f"{r['test_win_rate']:.0%}",
+                      f"{r['test_max_dd']:.1%}", c(r["test_buy_hold"]))
+        console.print(t)
+    if s.get("profitable"):
+        console.print(Panel(f"Торгуем: [bold]{', '.join(s['tickers'])}[/bold] на свечах [bold]{s['interval']} мин[/bold]"
+                            f"\nПороги входа: {s.get('thresholds')}", title="[green]Выбрана стратегия[/green]"))
+    else:
+        console.print(Panel(f"{s.get('reason')}\n\nРеальную торговлю бот запускать не будет (только --force). "
+                            "Попробуйте тариф с меньшей комиссией, больше капитал или другие бумаги.",
+                            title="[red]Прибыльной стратегии не найдено[/red]"))

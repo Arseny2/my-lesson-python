@@ -21,6 +21,7 @@ class MarketContext:
     indicators: dict
     behavior: dict
     flow: dict
+    book: dict = field(default_factory=dict)   # давление в стакане
     news: list = field(default_factory=list)   # list[NewsItem]
     market_news: list = field(default_factory=list)
     position: dict | None = None               # текущая позиция, если есть

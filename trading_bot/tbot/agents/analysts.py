@@ -107,14 +107,14 @@ class SentimentAnalyst(Agent):
     role_prompt = (
         "Ты - аналитик поведения участников рынка. По ленте сделок (кто инициатор: покупатель B или продавец S, "
         "что делают крупные игроки) и по свечам (объём на росте и падении, всплески объёма, индекс страха и "
-        "жадности) определи, кто сейчас контролирует цену: покупатели или продавцы, есть ли паника, FOMO, "
+        "жадности), а также по стакану заявок (перевес покупателей или продавцов, «стены» крупных заявок, спред) определи, кто сейчас контролирует цену: покупатели или продавцы, есть ли паника, FOMO, "
         "накопление или распределение крупными игроками. Учитывай, что толпа часто ошибается на экстремумах."
     )
 
     def analyze(self, ctx: MarketContext) -> AgentReport:
         if self.llm:
             data = (f"Бумага: {ctx.ticker}, цена {ctx.price}\nПоток сделок:\n{as_json(ctx.flow)}\n"
-                    f"Поведение по свечам:\n{as_json(ctx.behavior)}")
+                    f"Стакан:\n{as_json(ctx.book)}\nПоведение по свечам:\n{as_json(ctx.behavior)}")
             out = self.llm.ask(self.role_prompt, data, AgentReport)
             if out:
                 out.signal, out.confidence = clamp(out.signal), clamp(out.confidence, 0, 1)
@@ -131,6 +131,10 @@ class SentimentAnalyst(Agent):
         if f.get("available"):
             score += f["imbalance"] * 0.8 + f["big_trades_imbalance"] * 0.6
             points.append(f"дисбаланс покупок/продаж {f['imbalance']:+.2f}, крупные игроки {f['big_trades_imbalance']:+.2f}")
+        bk = ctx.book or {}
+        if bk.get("available"):
+            score += bk["imbalance"] * 0.4
+            points.append(f"перевес в стакане {bk['imbalance']:+.2f}")
         fg = b.get("fear_greed", 50)
         if fg > 80:
             score -= 0.25; points.append(f"жадность {fg:.0f}/100 - риск разворота")

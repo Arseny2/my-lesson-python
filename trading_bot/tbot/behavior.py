@@ -28,6 +28,25 @@ def trade_flow(trades: pd.DataFrame) -> dict:
     }
 
 
+def book_pressure(book: dict | None, levels: int = 10) -> dict:
+    """Стакан: перевес заявок на покупку над заявками на продажу на ближних уровнях и спред."""
+    if not book or not book.get("bids") or not book.get("asks"):
+        return {"available": False}
+    bids, asks = book["bids"][:levels], book["asks"][:levels]
+    bq, aq = sum(q for _, q in bids), sum(q for _, q in asks)
+    best_bid, best_ask = bids[0][0], asks[0][0]
+    mid = (best_bid + best_ask) / 2
+    # «стены» - уровень, где объём в 3+ раза больше среднего
+    avg = (bq + aq) / max(1, len(bids) + len(asks))
+    return {
+        "available": True,
+        "imbalance": round((bq - aq) / (bq + aq), 3) if bq + aq else 0.0,
+        "spread_pct": round((best_ask - best_bid) / mid, 5) if mid else None,
+        "bid_wall": max(bids, key=lambda x: x[1])[0] if any(q > 3 * avg for _, q in bids) else None,
+        "ask_wall": max(asks, key=lambda x: x[1])[0] if any(q > 3 * avg for _, q in asks) else None,
+    }
+
+
 def candle_behavior(df: pd.DataFrame, n: int = 20) -> dict:
     """Метрики поведения толпы по свечам: объём на росте vs на падении, всплески объёма, «страх/жадность»."""
     tail = df.tail(n)
