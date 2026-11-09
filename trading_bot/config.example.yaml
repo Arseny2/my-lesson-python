@@ -1,0 +1,44 @@
+# Скопируйте этот файл в config.yaml и меняйте под себя.
+# Секреты (ключи и токены) сюда НЕ пишите - они в файле .env
+
+tickers: [SBER, GAZP, LKOH]   # какие акции торговать (тикеры Мосбиржи)
+board: TQBR                   # основной режим торгов акциями
+candle_interval: 60           # размер свечи в минутах: 10, 60 или 1440 (день)
+history_days: 60              # сколько дней истории смотрят агенты
+poll_seconds: 3600            # как часто запускать анализ (секунды)
+
+# Куда отправлять заявки:
+#   paper            - виртуальные деньги внутри бота (по умолчанию, безопасно)
+#   tinvest_sandbox  - песочница Т-Инвестиций (виртуальные деньги, реальный API)
+#   tinvest_live     - РЕАЛЬНЫЕ деньги (нужны оба предохранителя ниже)
+broker: paper
+live_trading_enabled: false   # для tinvest_live: true + флаг --i-understand-real-money
+
+start_cash: 100000            # стартовый капитал для paper и песочницы, ₽
+commission_pct: 0.0005        # комиссия брокера (0.05%)
+slippage_pct: 0.0005          # проскальзывание при рыночной заявке
+
+use_llm: true                 # агенты думают через Claude (нужен ANTHROPIC_API_KEY)
+llm_model: claude-opus-5-5
+llm_effort: medium            # low | medium | high - глубже думает = дороже
+
+news_feeds:
+  - https://www.interfax.ru/rss.asp
+  - https://rssexport.rbc.ru/rbcnews/news/30/full.rss
+
+company_keywords:
+  SBER: [Сбер, Сбербанк, SBER]
+  GAZP: [Газпром, GAZP]
+  LKOH: [Лукойл, ЛУКОЙЛ, LKOH]
+
+data_dir: data                # здесь бот хранит портфель, память и уроки
+
+risk:
+  max_position_pct: 0.20      # максимум 20% капитала в одной акции
+  max_total_exposure_pct: 0.80
+  max_daily_loss_pct: 0.03    # дневной убыток 3% - стоп покупок до завтра
+  min_stop_loss_pct: 0.01
+  max_stop_loss_pct: 0.08
+  atr_stop_multiplier: 2.0
+  max_trades_per_day: 10
+  min_confidence: 0.35
