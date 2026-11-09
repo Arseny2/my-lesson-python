@@ -10,8 +10,8 @@ import yaml
 
 @dataclass
 class RiskConfig:
-    max_daily_loss_pct: float = 0.03    # дневной убыток 3% - покупки запрещены до конца дня
-    risk_per_trade_pct: float = 0.01    # в одной сделке рискуем не больше 1% капитала (до стопа)
+    risk_per_trade_pct: float = 0.03    # в одной сделке до стопа теряем не больше 3% капитала
+    max_daily_loss_pct: float = 0.09    # страховка: после ~3 стопов подряд (-9%) покупки до конца дня запрещены
     max_position_pct: float = 1.0       # при маленьком капитале можно весь капитал в одну бумагу
     max_total_exposure_pct: float = 1.0
     min_stop_loss_pct: float = 0.002
@@ -20,6 +20,9 @@ class RiskConfig:
     min_edge_over_costs: float = 2.0    # тейк должен быть хотя бы в 2 раза больше комиссий за круг
     max_trades_per_day: int = 60
     min_confidence: float = 0.35        # слабые сигналы не торгуем
+    max_hold_cycles: int = 10           # выход по времени: держим не дольше N свечей, если сигнал ослаб
+    min_team_accuracy: float = 0.52     # если команда угадывает не лучше монетки - не торгуем
+    accuracy_check_after: int = 200     # ...проверяем это после стольких оценённых сигналов
 
 
 @dataclass
@@ -42,8 +45,8 @@ class Config:
     session_hours: float = 6.0          # сколько часов работает бот за запуск
     flat_at_session_end: bool = True    # в конце сессии/дня закрыть все позиции
     start_cash: float = 1_000.0
-    # Комиссия зависит от тарифа Т-Инвестиций: «Инвестор» ~0.3%, «Трейдер» ~0.05%
-    commission_pct: float = 0.003
+    # Комиссия тарифа Т-Инвестиций: «Трейдер» ~0.05%, «Инвестор» ~0.3%
+    commission_pct: float = 0.0005
     slippage_pct: float = 0.0005
     data_source: str = "tinvest"        # tinvest - без задержки (нужен токен) | moex - задержка ~15 мин
     broker: str = "paper"               # paper | tinvest_sandbox | tinvest_live
@@ -54,6 +57,7 @@ class Config:
     # always - Claude в каждом цикле; escalate - алгоритмы каждую минуту, Claude только при сильном сигнале
     llm_mode: str = "escalate"
     escalate_threshold: float = 0.15
+    debate_rounds: int = 1              # 1 - быстрый спор за 1 запрос (минутки); 2+ - настоящие раунды Бык <-> Медведь
     llm_daily_budget_usd: float = 10.0  # дневной лимит расходов на Claude
     llm_budget_share: float = 0.5       # какую часть дневного лимита можно потратить за сессию
     news_feeds: list[str] = field(default_factory=lambda: [

@@ -69,7 +69,9 @@ def run_backtest(cfg: Config, ticker: str, candles: pd.DataFrame, lot_size: int 
             broker.check_exits(ticker, {k: float(df[k].iloc[i]) for k in ("open", "high", "low", "close")}, t)
             engine.close_all(t, reason="конец дня")
         else:
-            engine.run_cycle(ticker, win, lot_size=lot_size, exec_price=next_open, time=t)
+            # с Claude скрываем название и даты: иначе ИИ может «вспомнить», что было с бумагой дальше
+            engine.run_cycle(ticker, win, lot_size=lot_size, exec_price=next_open, time=t,
+                             anonymous=llm is not None)
         equity.append(broker.portfolio({ticker: float(df["close"].iloc[i + 1])})["equity"])
         if progress:
             progress(i - first + 1, n - 1 - first)

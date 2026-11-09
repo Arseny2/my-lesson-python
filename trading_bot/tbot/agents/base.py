@@ -28,6 +28,12 @@ class MarketContext:
     portfolio: dict = field(default_factory=dict)
     lessons: list[str] = field(default_factory=list)  # выводы из прошлых сделок
     agent_stats: dict = field(default_factory=dict)   # точность агентов в прошлом
+    similar: dict = field(default_factory=dict)       # что было в похожих ситуациях
+    anonymous: bool = False   # скрыть название и даты от Claude (бэктест: чтобы ИИ не «вспомнил» историю)
+
+    @property
+    def label(self) -> str:
+        return "Бумага X" if self.anonymous else f"{self.ticker} ({self.name})"
 
 
 def clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
@@ -38,9 +44,12 @@ def as_json(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=1, default=str)
 
 
-def recent_bars(df: pd.DataFrame, n: int = 30) -> str:
+def recent_bars(df: pd.DataFrame, n: int = 30, anonymous: bool = False) -> str:
     cols = ["open", "high", "low", "close", "volume"]
     tail = df[cols].tail(n).round(3)
+    if anonymous:  # без дат: номер свечи вместо времени
+        tail = tail.reset_index(drop=True)
+        tail.index = tail.index - len(tail) + 1
     return tail.to_csv()
 
 

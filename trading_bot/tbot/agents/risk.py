@@ -14,10 +14,12 @@ class RiskManager(Agent):
     name = "risk"
     title = "6. Риск-менеджер"
     role_prompt = (
-        "Ты - риск-менеджер. Твоя задача - сохранить капитал. Проверь решение трейдера: не слишком ли большой "
-        "размер, адекватен ли стоп-лосс волатильности (ATR), нет ли конфликта сигналов, не торгуем ли против "
-        "сильного тренда, нет ли важных событий (отчётность, решение ЦБ). Ты можешь одобрить, уменьшить размер "
-        "или запретить сделку. Жёсткие лимиты всё равно проверит код."
+        "Ты - риск-менеджер (портфельный управляющий) и проводишь совещание трёх риск-аналитиков. "
+        "Агрессивный ищет, почему риск оправдан; нейтральный взвешивает; осторожный ищет, что может пойти не "
+        "так (слишком большой размер, стоп внутри шума ATR, конфликт сигналов, торговля против тренда, важные "
+        "события - отчётность, решение ЦБ, плохие исходы в похожих ситуациях). Запиши мнение каждого, затем "
+        "прими итоговое решение: одобрить, уменьшить размер или запретить. Твоя задача - сохранить капитал. "
+        "Жёсткие лимиты всё равно проверит код - ты можешь только ужесточить их."
     )
 
     def __init__(self, cfg: RiskConfig, llm=None, round_trip_cost: float = 0.0):
@@ -29,9 +31,10 @@ class RiskManager(Agent):
                day_pnl_pct: float, trades_today: int) -> RiskVerdict:
         verdict = None
         if self.llm and decision.action != Action.HOLD:
-            data = (f"Бумага: {ctx.ticker}, цена {ctx.price}, ATR14 {ctx.indicators.get('atr14')}\n"
+            data = (f"Бумага: {ctx.label}, цена {ctx.price}, ATR14 {ctx.indicators.get('atr14')}\n"
                     f"Решение трейдера:\n{as_json(decision.model_dump())}\n"
                     f"Спор:\n{as_json(debate.model_dump())}\nПортфель: {as_json(ctx.portfolio)}\n"
+                    f"Похожие ситуации в прошлом:\n{as_json(ctx.similar)}\n"
                     f"Лимиты: {as_json(self.cfg.__dict__)}\nPnL за день: {day_pnl_pct:.2%}")
             verdict = self.llm.ask(self.role_prompt, data, RiskVerdict)
         if verdict is None:
@@ -46,9 +49,12 @@ class RiskManager(Agent):
         c = self.cfg
         reasons = [verdict.reason]
 
+        views = {"aggressive_view": verdict.aggressive_view, "neutral_view": verdict.neutral_view,
+                 "conservative_view": verdict.conservative_view}
+
         def deny(why: str) -> RiskVerdict:
             return RiskVerdict(approved=False, size_pct=0.0, stop_loss_pct=verdict.stop_loss_pct,
-                               take_profit_pct=verdict.take_profit_pct, reason=why)
+                               take_profit_pct=verdict.take_profit_pct, reason=why, **views)
 
         if decision.action == Action.HOLD:
             return deny("Трейдер решил не торговать")
@@ -58,7 +64,7 @@ class RiskManager(Agent):
                 return deny("Позиции нет, а шорт не поддерживается")
             return RiskVerdict(approved=True, size_pct=min(1.0, max(decision.size_pct, 0.0)) or 1.0,
                                stop_loss_pct=verdict.stop_loss_pct, take_profit_pct=verdict.take_profit_pct,
-                               reason="Сокращение риска всегда разрешено. " + verdict.reason)
+                               reason="Сокращение риска всегда разрешено. " + verdict.reason, **views)
 
         # Дальше только BUY
         if not verdict.approved:
@@ -69,6 +75,19 @@ class RiskManager(Agent):
             return deny(f"Достигнут лимит сделок за день ({c.max_trades_per_day})")
         if debate.confidence < c.min_confidence:
             return deny(f"Уверенность команды {debate.confidence:.2f} ниже порога {c.min_confidence}")
+        team = (ctx.agent_stats or {}).get("debate", {})
+        if team.get("total", 0) >= c.accuracy_check_after and team.get("acc", 1) < c.min_team_accuracy:
+            return deny(f"Команда пока угадывает направление в {team['acc']:.0%} случаев - не лучше монетки. "
+                        "Новые сделки не открываем, пока точность не вырастет")
+        sim = ctx.similar or {}
+        if sim.get("available") and sim.get("base", 0) >= 200:
+            if sim["up_share"] < 0.4 and sim["avg_return"] < 0:
+                return deny(f"Память против: в {sim['n']} похожих ситуациях цена росла лишь в "
+                            f"{sim['up_share']:.0%} случаев (в среднем {sim['avg_return']:+.2%})")
+            # мало угадать направление - движение должно окупить комиссию и проскальзывание
+            if sim["avg_return"] < self.round_trip_cost:
+                return deny(f"Ожидаемое движение {sim['avg_return']:+.2%} (по {sim['n']} похожим ситуациям) "
+                            f"меньше расходов на вход и выход {self.round_trip_cost:.2%}")
 
         equity = ctx.portfolio.get("equity") or 0
         exposure = ctx.portfolio.get("exposure") or 0
@@ -98,4 +117,4 @@ class RiskManager(Agent):
         if equity and size * equity < lot_value:
             return deny(f"Разрешённой суммы ({size * equity:,.0f} ₽) не хватает даже на 1 лот ({lot_value:,.0f} ₽)")
         return RiskVerdict(approved=True, size_pct=round(size, 4), stop_loss_pct=round(stop, 4),
-                           take_profit_pct=round(take, 4), reason="; ".join(reasons))
+                           take_profit_pct=round(take, 4), reason="; ".join(reasons), **views)

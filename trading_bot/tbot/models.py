@@ -44,8 +44,11 @@ class TradeDecision(BaseModel):
 
 
 class RiskVerdict(BaseModel):
-    """Вердикт риск-менеджера."""
+    """Вердикт риск-менеджера после совещания трёх риск-аналитиков (как в TradingAgents)."""
 
+    aggressive_view: str = Field(default="", description="Агрессивный риск-аналитик: почему стоит рискнуть")
+    neutral_view: str = Field(default="", description="Нейтральный риск-аналитик: взвешенная оценка")
+    conservative_view: str = Field(default="", description="Осторожный риск-аналитик: что может пойти не так")
     approved: bool
     size_pct: float = Field(description="Разрешённая доля капитала (может быть меньше запрошенной)")
     stop_loss_pct: float

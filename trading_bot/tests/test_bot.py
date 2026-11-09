@@ -65,7 +65,7 @@ def test_risk_llm_cannot_loosen_limits():
 
 def test_risk_blocks_after_daily_loss_and_low_confidence():
     rm = RiskManager(RiskConfig())
-    assert not rm.review(ctx(), buy(), DEB, day_pnl_pct=-0.05, trades_today=0).approved
+    assert not rm.review(ctx(), buy(), DEB, day_pnl_pct=-0.10, trades_today=0).approved
     weak = DEB.model_copy(update={"confidence": 0.1})
     assert not rm.review(ctx(), buy(), weak, 0, 0).approved
 
@@ -340,3 +340,93 @@ def test_tinvest_candles_parsing(monkeypatch):
     assert len(df) == 1                          # незакрытая свеча отброшена
     assert df["close"].iloc[0] == pytest.approx(90.4) and df["volume"].iloc[0] == 70   # лоты -> штуки
     assert str(df.index[0]) == "2026-11-09 10:00:00"   # UTC -> МСК
+
+
+# ---------- улучшения относительно TradingAgents ----------
+def test_similar_situations_memory_finds_pattern():
+    """Память должна понять: при перепроданности (RSI низкий) цена потом росла."""
+    import random
+    from tbot.memory import situation
+    m = Memory(eval_after_cycles=1)
+    rnd = random.Random(0)
+    for _ in range(400):
+        rsi = rnd.uniform(10, 90)
+        f = situation({"close": 100, "rsi14": rsi}, {})
+        m.record_signals("T", 100.0, {}, "t", features=f, interval=1)
+        m.evaluate("T", 101.0 if rsi < 50 else 99.0)
+    low = m.similar(situation({"close": 100, "rsi14": 15}, {}), interval=1)
+    high = m.similar(situation({"close": 100, "rsi14": 85}, {}), interval=1)
+    assert low["up_share"] > 0.9 and high["up_share"] < 0.1
+    assert not m.similar(situation({"close": 100, "rsi14": 15}, {}), interval=60)["available"]
+
+
+def test_relevant_lessons_prefers_similar_situation():
+    from tbot.memory import situation
+    m = Memory()
+    m.lessons = [{"text": "урок про перепроданность", "f": situation({"close": 1, "rsi14": 15}, {}), "ticker": "A"},
+                 {"text": "урок про перекупленность", "f": situation({"close": 1, "rsi14": 85}, {}), "ticker": "B"}]
+    assert m.relevant_lessons(situation({"close": 1, "rsi14": 20}, {}), "Z", k=1)[0] == "урок про перепроданность"
+
+
+def test_multi_round_debate_calls_bull_bear_and_judge(monkeypatch):
+    from tbot.agents.debate import Argument, BullBearDebate
+    seen = []
+
+    def fake_ask(self, role, data, schema):
+        seen.append(schema.__name__)
+        if schema is Argument:
+            return Argument(argument="довод", strength=0.6)
+        assert "Раунд 2" in data   # судья видит всю стенограмму
+        return DebateResult(bull_case="a", bear_case="b", winner="bull", signal=0.5, confidence=0.6)
+
+    monkeypatch.setattr(LLM, "ask", fake_ask)
+    d = BullBearDebate(LLM(), rounds=2)
+    rep = AgentReport(signal=0.5, confidence=0.5, summary="", key_points=[])
+    out = d.run(ctx(), {"technical": rep}, {})
+    assert seen == ["Argument"] * 4 + ["DebateResult"] and out.signal == 0.5
+
+
+def test_backtest_with_llm_hides_ticker_and_dates(monkeypatch):
+    seen = []
+    monkeypatch.setattr(LLM, "ask", lambda self, role, data, schema: seen.append(data))
+    cfg = Config(candle_interval=60, llm_mode="always", start_cash=100_000)
+    run_backtest(cfg, "SBER", make_candles(80), lot_size=1, llm=LLM())
+    assert seen and all("SBER" not in d and "2025-" not in d for d in seen)
+
+
+def test_risk_vetoes_when_similar_situations_lost():
+    rm = RiskManager(RiskConfig())
+    c = ctx(price=100, lot=1, equity=100_000)
+    c.similar = {"available": True, "base": 500, "n": 20, "up_share": 0.2, "avg_return": -0.004}
+    v = rm.review(c, buy(0.2, stop=0.05, take=0.1), DEB, 0, 0)
+    assert not v.approved and "Память" in v.reason
+
+
+def test_risk_denies_when_expected_move_below_costs():
+    rm = RiskManager(RiskConfig(), round_trip_cost=0.002)
+    c = ctx(price=100, lot=1, equity=100_000)
+    c.similar = {"available": True, "base": 500, "n": 20, "up_share": 0.7, "avg_return": 0.001}
+    v = rm.review(c, buy(0.2, stop=0.05, take=0.1), DEB, 0, 0)
+    assert not v.approved and "меньше расходов" in v.reason
+
+
+def test_risk_stops_trading_without_edge():
+    rm = RiskManager(RiskConfig())
+    c = ctx(price=100, lot=1, equity=100_000)
+    c.agent_stats = {"debate": {"total": 300, "hits": 150, "acc": 0.5}}
+    assert "монетки" in rm.review(c, buy(0.2, stop=0.05, take=0.1), DEB, 0, 0).reason
+
+
+def test_time_exit_closes_stale_position():
+    cfg = Config(start_cash=100_000, entry_threshold=0.99)   # новых входов не будет
+    cfg.risk.max_hold_cycles = 3
+    broker = PaperBroker(100_000, 0, 0)
+    engine = TradingEngine(cfg, broker, Memory())
+    candles = make_candles(300, start_price=100, vol=0.0005)
+    broker.buy("T", 1, 1, float(candles["close"].iloc[-1]), stop=1.0, take=1e9, time="t")
+    reasons = []
+    for i in range(4):
+        r = engine.run_cycle("T", candles.iloc[: 250 + i], lot_size=1)
+        if r.fill:
+            reasons.append(r.fill.reason)
+    assert reasons == ["выход по времени"] and broker.position("T") is None

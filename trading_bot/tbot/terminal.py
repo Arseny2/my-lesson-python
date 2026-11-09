@@ -14,6 +14,7 @@ AGENT_TITLES = {
     "technical": "1. Технический аналитик",
     "news": "2. Новостной аналитик",
     "sentiment": "3. Поведение трейдеров",
+    "memory": "   Память: похожие ситуации",
 }
 
 
@@ -46,7 +47,10 @@ def show_cycle(r: CycleResult) -> None:
     if r.verdict:
         v = r.verdict
         mark = "[green]ОДОБРЕНО[/green]" if v.approved else "[red]ОТКЛОНЕНО[/red]"
-        t.add_row("6. Риск-менеджер", mark, f"{v.size_pct:.0%}", v.reason)
+        views = "\n".join(f"[dim]{lbl}: {txt[:200]}[/dim]" for lbl, txt in (
+            ("Агрессивный", v.aggressive_view), ("Нейтральный", v.neutral_view),
+            ("Осторожный", v.conservative_view)) if txt)
+        t.add_row("6. Риск-менеджер", mark, f"{v.size_pct:.0%}", v.reason + (f"\n{views}" if views else ""))
     console.print(t)
     if r.fill:
         f = r.fill

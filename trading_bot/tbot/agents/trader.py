@@ -25,12 +25,13 @@ class Trader(Agent):
 
     def decide(self, ctx: MarketContext, reports: dict[str, AgentReport], debate: DebateResult) -> TradeDecision:
         if self.llm:
-            data = (f"Бумага: {ctx.ticker} ({ctx.name}), цена {ctx.price}, лот {ctx.lot_size} шт., "
+            data = (f"Бумага: {ctx.label}, цена {ctx.price}, лот {ctx.lot_size} шт., "
                     f"ATR14 {ctx.indicators.get('atr14')}, round_trip_cost {self.round_trip_cost:.4f}\n"
                     f"Отчёты:\n{as_json({k: v.model_dump() for k, v in reports.items()})}\n"
                     f"Спор:\n{as_json(debate.model_dump())}\n"
+                    f"Похожие ситуации в прошлом:\n{as_json(ctx.similar)}\n"
                     f"Позиция: {as_json(ctx.position)}\nПортфель: {as_json(ctx.portfolio)}\n"
-                    f"Уроки прошлых сделок:\n" + ("\n".join(f"- {l}" for l in ctx.lessons[-10:]) or "пока нет"))
+                    f"Уроки из похожих прошлых сделок:\n" + ("\n".join(f"- {l}" for l in ctx.lessons[-10:]) or "пока нет"))
             out = self.llm.ask(self.role_prompt, data, TradeDecision)
             if out:
                 return out

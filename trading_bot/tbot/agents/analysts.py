@@ -18,9 +18,9 @@ class TechnicalAnalyst(Agent):
 
     def analyze(self, ctx: MarketContext) -> AgentReport:
         if self.llm:
-            data = (f"Бумага: {ctx.ticker} ({ctx.name}), цена {ctx.price}\n"
+            data = (f"Бумага: {ctx.label}, цена {ctx.price}\n"
                     f"Индикаторы:\n{as_json(ctx.indicators)}\n"
-                    f"Последние свечи (CSV):\n{recent_bars(ctx.candles, 40)}")
+                    f"Последние свечи (CSV):\n{recent_bars(ctx.candles, 40, ctx.anonymous)}")
             out = self.llm.ask(self.role_prompt, data, AgentReport)
             if out:
                 out.signal, out.confidence = clamp(out.signal), clamp(out.confidence, 0, 1)
@@ -79,7 +79,7 @@ class NewsAnalyst(Agent):
             fmt = lambda items: "\n".join(
                 f"- [{n.published:%d.%m %H:%M}] {n.title}. {n.summary[:300]}" if n.published else f"- {n.title}"
                 for n in items) or "нет"
-            data = (f"Бумага: {ctx.ticker} ({ctx.name})\nНовости о компании:\n{fmt(ctx.news)}\n\n"
+            data = (f"Бумага: {ctx.label}\nНовости о компании:\n{fmt(ctx.news)}\n\n"
                     f"Общие новости рынка:\n{fmt(ctx.market_news)}")
             out = self.llm.ask(self.role_prompt, data, AgentReport)
             if out:
@@ -113,7 +113,7 @@ class SentimentAnalyst(Agent):
 
     def analyze(self, ctx: MarketContext) -> AgentReport:
         if self.llm:
-            data = (f"Бумага: {ctx.ticker}, цена {ctx.price}\nПоток сделок:\n{as_json(ctx.flow)}\n"
+            data = (f"Бумага: {ctx.label}, цена {ctx.price}\nПоток сделок:\n{as_json(ctx.flow)}\n"
                     f"Стакан:\n{as_json(ctx.book)}\nПоведение по свечам:\n{as_json(ctx.behavior)}")
             out = self.llm.ask(self.role_prompt, data, AgentReport)
             if out:
