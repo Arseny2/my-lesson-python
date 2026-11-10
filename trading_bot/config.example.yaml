@@ -27,7 +27,7 @@ broker: paper
 live_trading_enabled: false   # для tinvest_live: true + флаг --i-understand-real-money
 
 # --- Claude ---
-use_llm: true
+use_llm: false           # true - когда появится ANTHROPIC_API_KEY; пока агенты думают алгоритмами
 llm_model: claude-opus-5-5
 llm_effort: low          # low - быстрее ответы, важно для минуток
 llm_mode: escalate       # escalate - алгоритмы каждую минуту, Claude только при сильном сигнале
