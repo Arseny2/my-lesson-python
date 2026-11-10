@@ -9,11 +9,16 @@
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    sys.exit("Нужен Python 3.10 или новее. Скачайте с https://www.python.org/downloads/")
+
 import argparse
 import dataclasses
 import logging
 import math
-import sys
+import os
 import time
 import zlib
 from datetime import datetime, timedelta
@@ -34,6 +39,7 @@ from tbot.strategy_select import load_strategy, save_strategy, select_strategy
 from tbot.terminal import console, show_backtest, show_cycle, show_portfolio, show_selection
 from tbot.tinvest_api import TInvestClient
 
+ROOT = Path(__file__).resolve().parent
 MSK = ZoneInfo("Europe/Moscow")
 log = logging.getLogger("tbot")
 
@@ -295,11 +301,25 @@ def cmd_status(cfg: Config, args) -> None:
         console.print(f"• {l}")
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Торговый бот: 6 ИИ-агентов для Мосбиржи")
-    p.add_argument("--config", default="config.yaml")
+def cmd_setup(cfg: Config, args) -> None:
+    from tbot.setup_wizard import run_setup
+    run_setup(ROOT)
+
+
+def cmd_check(cfg: Config, args) -> None:
+    from tbot.setup_wizard import check_connections
+    check_connections(cfg.tinvest_token, cfg.board)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Торговый бот: 6 ИИ-агентов для Мосбиржи. "
+                                            "Без команды - откроется меню.")
+    p.add_argument("--config", default=str(ROOT / "config.yaml"))
     p.add_argument("-v", "--verbose", action="store_true")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
+
+    sub.add_parser("setup", help="мастер настройки: токен T-Invest и проверка связи")
+    sub.add_parser("check", help="проверить связь с биржей и новостями")
 
     s = sub.add_parser("demo", help="демо без интернета")
     s.add_argument("--llm", action="store_true", help="использовать Claude в цикле анализа")
@@ -325,15 +345,48 @@ def main() -> None:
     s.add_argument("--force", action="store_true", help="торговать, даже если select не нашёл прибыльной стратегии")
     s.add_argument("--i-understand-real-money", action="store_true")
     sub.add_parser("status", help="портфель и обучение")
+    return p
 
-    args = p.parse_args()
+
+def run_command(argv: list[str]) -> None:
+    args = build_parser().parse_args(argv)
+    if args.cmd is None:
+        build_parser().print_help()
+        return
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "httpx2", "anthropic", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    from tbot.setup_wizard import ensure_files
+    ensure_files(ROOT)   # создать config.yaml и .env из шаблонов, если их ещё нет
     cfg = load_config(args.config)
-    {"demo": cmd_demo, "select": cmd_select, "analyze": cmd_analyze, "backtest": cmd_backtest,
-     "run": cmd_run, "status": cmd_status}[args.cmd](cfg, args)
+    {"setup": cmd_setup, "check": cmd_check, "demo": cmd_demo, "select": cmd_select, "analyze": cmd_analyze,
+     "backtest": cmd_backtest, "run": cmd_run, "status": cmd_status}[args.cmd](cfg, args)
+
+
+def main() -> None:
+    os.chdir(ROOT)   # данные и настройки - рядом с main.py, откуда бы ни запускали
+    if len(sys.argv) > 1:
+        run_command(sys.argv[1:])
+        return
+    # без аргументов - простое меню (удобно запускать двойным кликом)
+    from tbot.setup_wizard import menu
+    while True:
+        argv = menu()
+        if argv is None:
+            break
+        if not argv:
+            continue
+        try:
+            run_command(argv)
+        except KeyboardInterrupt:
+            console.print("\nОстановлено")
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                console.print(f"[yellow]{e.code}[/yellow]")
+        except Exception as e:   # в меню не падаем - показываем ошибку и возвращаемся
+            console.print(f"[red]Ошибка: {e}[/red]")
+        input("\nНажмите Enter, чтобы вернуться в меню...")
 
 
 if __name__ == "__main__":

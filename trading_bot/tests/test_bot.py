@@ -430,3 +430,14 @@ def test_time_exit_closes_stale_position():
         if r.fill:
             reasons.append(r.fill.reason)
     assert reasons == ["выход по времени"] and broker.position("T") is None
+
+
+def test_env_writer_replaces_only_its_key(tmp_path):
+    from tbot.setup_wizard import _write_env_value
+    env = tmp_path / ".env"
+    env.write_text("# комментарий\nANTHROPIC_API_KEY=\nTINVEST_TOKEN=old\n", encoding="utf-8")
+    _write_env_value(env, "TINVEST_TOKEN", "new")
+    _write_env_value(env, "TINVEST_ACCOUNT_ID", "acc")
+    text = env.read_text(encoding="utf-8")
+    assert "TINVEST_TOKEN=new" in text and "old" not in text
+    assert "# комментарий" in text and "TINVEST_ACCOUNT_ID=acc" in text

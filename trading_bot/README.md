@@ -60,31 +60,28 @@
 >
 > ⚠️ Бот не гарантирует прибыль. Сначала бумажная торговля и песочница, потом реальные деньги.
 
-## Установка
+## Установка и запуск
 
-Нужен Python 3.10 или новее.
+**Пошаговая инструкция для своего компьютера — в файле [КАК_ЗАПУСТИТЬ.md](КАК_ЗАПУСТИТЬ.md).**
+Коротко: Windows — двойной клик по `start_windows.bat`, Mac/Linux — `bash start_mac_linux.sh`.
+Откроется меню; токен T-Invest вводится в пункте «Настройка».
+
+Для тех, кто привык к командной строке:
 
 ```bash
 cd trading_bot
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp config.example.yaml config.yaml
-cp .env.example .env               # впишите ANTHROPIC_API_KEY и TINVEST_TOKEN
+python main.py setup                # токен T-Invest и проверка связи
+python main.py select               # какие акции по карману и какой таймфрейм прибыльнее
+python main.py run --reset-paper    # бумажная сессия 6 часов: реальные цены, виртуальные 1000 ₽
+python main.py status               # результаты и чему бот научился
+python main.py demo                 # проверка без интернета
 ```
 
-## Порядок запуска
-
-```bash
-python main.py demo                 # 0. проверка без интернета и ключей
-python main.py select               # 1. какие акции по карману и какой таймфрейм прибыльнее
-python main.py analyze              # 2. что думают агенты сейчас (с Claude, без сделок)
-python main.py run --reset-paper    # 3. бумажная сессия 6 часов: реальные цены, виртуальные 1000 ₽
-python main.py run                  # 4. то же в песочнице (broker: tinvest_sandbox)
-python main.py status               # 5. результаты и чему бот научился
-```
-
-Флаги `run`: `--hours 6`, `--once`, `--no-llm`, `--verbose-cycles`, `--ignore-hours`.
+Другие флаги `run`: `--hours 6`, `--once`, `--verbose-cycles`, `--ignore-hours`.
+Сейчас бот работает **без Claude** (`use_llm: false`): все агенты думают встроенными алгоритмами.
+Когда появится ключ API, впишите `ANTHROPIC_API_KEY` в `.env` и поставьте `use_llm: true` в `config.yaml`.
 
 ## Бюджет на Claude
 
