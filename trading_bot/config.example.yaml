@@ -1,0 +1,55 @@
+# Скопируйте этот файл в config.yaml и меняйте под себя.
+# Секреты (ключи и токены) сюда НЕ пишите - они в файле .env
+
+# --- Что и как торговать ---
+tickers: auto            # auto - бот сам выберет по карману и ликвидности (python main.py select)
+                         # или список, например: [VTBR, AFLT, IRAO]
+max_tickers: 3           # сколько бумаг торговать одновременно
+candle_interval: auto    # auto - лучший таймфрейм по итогам select, или число минут: 1, 10, 60
+test_intervals: [1, 10, 60]   # какие таймфреймы сравнивает select
+entry_threshold: 0.25    # с какой силы сигнала команды входить (select подбирает сам)
+
+# --- Сессия ---
+session_hours: 6         # сколько часов торгует бот за запуск
+flat_at_session_end: true   # в конце сессии и перед закрытием биржи закрыть все позиции
+
+# --- Деньги и комиссии ---
+start_cash: 1000         # капитал для paper и песочницы, ₽
+commission_pct: 0.0005   # тариф «Трейдер» ~0.05% (у «Инвестора» ~0.3%)
+slippage_pct: 0.0005
+
+# --- Данные и брокер ---
+data_source: tinvest     # tinvest - без задержки (нужен TINVEST_TOKEN) | moex - задержка ~15 мин
+# paper            - виртуальные деньги внутри бота (безопасно, по умолчанию)
+# tinvest_sandbox  - песочница Т-Инвестиций (виртуальные деньги, реальный API)
+# tinvest_live     - РЕАЛЬНЫЕ деньги (нужны оба предохранителя)
+broker: paper
+live_trading_enabled: false   # для tinvest_live: true + флаг --i-understand-real-money
+
+# --- Claude ---
+use_llm: false           # true - когда появится ANTHROPIC_API_KEY; пока агенты думают алгоритмами
+llm_model: claude-opus-5-5
+llm_effort: low          # low - быстрее ответы, важно для минуток
+llm_mode: escalate       # escalate - алгоритмы каждую минуту, Claude только при сильном сигнале
+                         # always   - Claude в каждом цикле (дорого: ~5 запросов на бумагу в минуту)
+escalate_threshold: 0.15
+debate_rounds: 1             # 1 - быстрый спор за 1 запрос (минутки); 2-3 - настоящие раунды Бык <-> Медведь
+llm_daily_budget_usd: 10     # дневной лимит расходов на Claude, $
+llm_budget_share: 0.5        # за сессию тратим не больше половины дневного лимита
+
+data_dir: data
+
+risk:
+  risk_per_trade_pct: 0.03    # в одной сделке до стопа теряем не больше 3% капитала (30 ₽ из 1000)
+  max_daily_loss_pct: 0.09    # страховка: после ~3 стопов (-9% за день) новые покупки запрещены до завтра
+  max_position_pct: 1.0       # при 1000 ₽ иначе не купить ни одного лота
+  max_total_exposure_pct: 1.0
+  min_stop_loss_pct: 0.002
+  max_stop_loss_pct: 0.05
+  atr_stop_multiplier: 2.0
+  min_edge_over_costs: 2.0    # тейк должен быть хотя бы в 2 раза больше комиссий за вход+выход
+  max_trades_per_day: 60
+  min_confidence: 0.35
+  max_hold_cycles: 10         # выход по времени, если сигнал ослаб
+  min_team_accuracy: 0.52     # команда угадывает не лучше монетки - новых сделок нет
+  accuracy_check_after: 200   # ...проверяется после 200 оценённых сигналов
